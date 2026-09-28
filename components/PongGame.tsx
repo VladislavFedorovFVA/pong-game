@@ -9,6 +9,7 @@ import {
 } from '@/lib/storage';
 import { playHit, SOUND_PADDLE, SOUND_WALL, SOUND_SCORE } from '@/lib/sound';
 
+// Размеры поля
 const W = 600;
 const H = 400;
 const PADDLE_W = 10;
@@ -16,12 +17,14 @@ const PADDLE_H = 80;
 const BALL_R = 8;
 const WIN_SCORE = 5;
 
+// Скорость мяча в зависимости от настройки
 const BALL_SPEED: Record<Settings['speed'], number> = {
   slow: 4,
   normal: 6,
   fast: 8,
 };
 
+// Скорость ракетки ИИ: зависит и от скорости игры, и от сложности
 function aiSpeedFor(settings: Settings): number {
   const base =
     settings.speed === 'slow' ? 3 :
@@ -39,13 +42,16 @@ type GameState = 'idle' | 'playing' | 'paused' | 'finished';
 export default function PongGame() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // Настройки (цвета + скорость + сложность)
   const [settings, setSettings] = useState<Settings>(defaultSettings);
 
+  // Счёт и состояние игры (для UI)
   const [playerScore, setPlayerScore] = useState(0);
   const [aiScore, setAiScore] = useState(0);
   const [state, setState] = useState<GameState>('idle');
   const [winner, setWinner] = useState<'player' | 'ai' | null>(null);
 
+  // Игровые объекты в ref, чтобы не вызывать ре-рендер на каждый кадр
   const playerY = useRef(H / 2 - PADDLE_H / 2);
   const aiY = useRef(H / 2 - PADDLE_H / 2);
   const ballX = useRef(W / 2);
@@ -53,18 +59,21 @@ export default function PongGame() {
   const ballVX = useRef(0);
   const ballVY = useRef(0);
 
+  // Для «ошибки» ИИ на лёгком уровне
   const frameCount = useRef(0);
   const aiError = useRef(0);
 
+  // Загружаем настройки при монтировании
   useEffect(() => {
     setSettings(loadSettings());
   }, []);
 
+  // Сброс позиций и запуск мяча
   const resetBall = (direction: 1 | -1) => {
     ballX.current = W / 2;
     ballY.current = H / 2;
     const speed = BALL_SPEED[settings.speed];
-    const angle = (Math.random() * Math.PI) / 3 - Math.PI / 6;
+    const angle = (Math.random() * Math.PI) / 3 - Math.PI / 6; // -30°..30°
     ballVX.current = Math.cos(angle) * speed * direction;
     ballVY.current = Math.sin(angle) * speed;
   };
@@ -79,6 +88,7 @@ export default function PongGame() {
     resetBall(Math.random() > 0.5 ? 1 : -1);
   };
 
+  // Сохранить матч в историю
   const endGame = (who: 'player' | 'ai', pScore: number, aScore: number) => {
     setWinner(who);
     setState('finished');
@@ -90,17 +100,41 @@ export default function PongGame() {
     });
   };
 
+  // Управление: мышь, тач (палец), стрелки, пробел (пауза)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const handleMouseMove = (e: MouseEvent) => {
+    // Переводим координаты из пикселей экрана в координаты игрового поля.
+    // Нужно, потому что canvas может отображаться меньше своих реальных
+    // 600x400 (на телефоне он ужимается под ширину экрана).
+    const screenToWorldY = (clientY: number) => {
       const rect = canvas.getBoundingClientRect();
-      const y = e.clientY - rect.top;
-      playerY.current = Math.max(
-        0,
-        Math.min(H - PADDLE_H, y - PADDLE_H / 2)
-      );
+      const scale = H / rect.height;
+      return (clientY - rect.top) * scale;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const y = screenToWorldY(e.clientY);
+      playerY.current = Math.max(0, Math.min(H - PADDLE_H, y - PADDLE_H / 2));
+    };
+
+    // Палец двигается — ракетка едет за ним. preventDefault, чтобы
+    // страница не скроллилась, пока играешь.
+    const handleTouchMove = (e: TouchEvent) => {
+      const t = e.touches[0];
+      if (!t) return;
+      const y = screenToWorldY(t.clientY);
+      playerY.current = Math.max(0, Math.min(H - PADDLE_H, y - PADDLE_H / 2));
+      e.preventDefault();
+    };
+
+    // Просто тап — тоже двигаем ракетку (если палец не сдвинулся).
+    const handleTouchStart = (e: TouchEvent) => {
+      const t = e.touches[0];
+      if (!t) return;
+      const y = screenToWorldY(t.clientY);
+      playerY.current = Math.max(0, Math.min(H - PADDLE_H, y - PADDLE_H / 2));
     };
 
     const handleKey = (e: KeyboardEvent) => {
@@ -120,13 +154,18 @@ export default function PongGame() {
     };
 
     canvas.addEventListener('mousemove', handleMouseMove);
+    canvas.addEventListener('touchstart', handleTouchStart, { passive: true });
+    canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
     window.addEventListener('keydown', handleKey);
     return () => {
       canvas.removeEventListener('mousemove', handleMouseMove);
+      canvas.removeEventListener('touchstart', handleTouchStart);
+      canvas.removeEventListener('touchmove', handleTouchMove);
       window.removeEventListener('keydown', handleKey);
     };
   }, []);
 
+  // Игровой цикл
   useEffect(() => {
     if (state !== 'playing') return;
 
@@ -140,6 +179,7 @@ export default function PongGame() {
     const loop = () => {
       frameCount.current++;
 
+      // --- Обновление ---
       ballX.current += ballVX.current;
       ballY.current += ballVY.current;
 
@@ -155,7 +195,7 @@ export default function PongGame() {
         playHit(SOUND_WALL);
       }
 
-      // ИИ
+      // ИИ: скорость и точность зависят от сложности
       const aiSpeed = aiSpeedFor(settings);
       const aiTarget = ballY.current - PADDLE_H / 2;
 
@@ -174,7 +214,7 @@ export default function PongGame() {
       }
       aiY.current = Math.max(0, Math.min(H - PADDLE_H, aiY.current));
 
-      // Игрок
+      // Столкновение с ракеткой игрока (слева)
       if (
         ballVX.current < 0 &&
         ballX.current - BALL_R < PADDLE_W &&
@@ -189,7 +229,7 @@ export default function PongGame() {
         playHit(SOUND_PADDLE);
       }
 
-      // ИИ-ракетка
+      // Столкновение с ракеткой ИИ (справа)
       if (
         ballVX.current > 0 &&
         ballX.current + BALL_R > W - PADDLE_W &&
@@ -204,7 +244,7 @@ export default function PongGame() {
         playHit(SOUND_PADDLE);
       }
 
-      // Гол игроку
+      // Гол игроку (мяч ушёл вправо)
       if (ballX.current - BALL_R > W) {
         playHit(SOUND_SCORE);
         setPlayerScore((s) => {
@@ -215,7 +255,7 @@ export default function PongGame() {
         resetBall(-1);
       }
 
-      // Гол ИИ
+      // Гол ИИ (мяч ушёл влево)
       if (ballX.current + BALL_R < 0) {
         playHit(SOUND_SCORE);
         setAiScore((s) => {
@@ -230,6 +270,7 @@ export default function PongGame() {
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, W, H);
 
+      // центральная линия
       ctx.setLineDash([6, 6]);
       ctx.strokeStyle = '#e5e7eb';
       ctx.beginPath();
@@ -238,10 +279,12 @@ export default function PongGame() {
       ctx.stroke();
       ctx.setLineDash([]);
 
+      // ракетки
       ctx.fillStyle = settings.paddleColor;
       ctx.fillRect(0, playerY.current, PADDLE_W, PADDLE_H);
       ctx.fillRect(W - PADDLE_W, aiY.current, PADDLE_W, PADDLE_H);
 
+      // мяч
       ctx.fillStyle = settings.ballColor;
       ctx.beginPath();
       ctx.arc(ballX.current, ballY.current, BALL_R, 0, Math.PI * 2);
@@ -257,14 +300,29 @@ export default function PongGame() {
 
   return (
     <div className="flex flex-col items-center gap-4">
-      <div className="w-full max-w-[600px] flex justify-between items-center px-2">
+      {/* Счёт и кнопка паузы */}
+      <div className="w-full max-w-[600px] flex justify-between items-center px-2 gap-2">
         <div className="text-sm text-gray-500">Ты</div>
         <div className="text-2xl font-bold tabular-nums">
           {playerScore} : {aiScore}
         </div>
-        <div className="text-sm text-gray-500">ИИ</div>
+        <button
+          onClick={() => {
+            setState((s) => {
+              if (s === 'playing') return 'paused';
+              if (s === 'paused') return 'playing';
+              return s;
+            });
+          }}
+          disabled={state !== 'playing' && state !== 'paused'}
+          className="px-3 py-1 text-sm border border-gray-300 rounded-md hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          aria-label="Пауза"
+        >
+          {state === 'paused' ? '▶ Продолжить' : '⏸ Пауза'}
+        </button>
       </div>
 
+      {/* Поле */}
       <div className="relative">
         <canvas
           ref={canvasRef}
@@ -273,10 +331,12 @@ export default function PongGame() {
           className="bg-white border border-gray-200 rounded-lg max-w-full h-auto touch-none select-none"
         />
 
+        {/* Оверлеи */}
         {state === 'idle' && (
           <div className="absolute inset-0 bg-white/80 flex flex-col items-center justify-center gap-3 rounded-lg">
             <p className="text-gray-700 text-center px-6">
-              Управляй ракеткой мышью или стрелками ↑ ↓. Пробел — пауза. Играем до {WIN_SCORE} очков.
+              Управляй ракеткой мышью, пальцем или стрелками ↑ ↓. Пробел или
+              кнопка «Пауза» — пауза. Играем до {WIN_SCORE} очков.
             </p>
             <button
               onClick={startGame}
@@ -290,7 +350,9 @@ export default function PongGame() {
         {state === 'paused' && (
           <div className="absolute inset-0 bg-white/70 flex flex-col items-center justify-center gap-2 rounded-lg">
             <h2 className="text-2xl font-bold">⏸ Пауза</h2>
-            <p className="text-gray-600 text-sm">Нажми пробел, чтобы продолжить</p>
+            <p className="text-gray-600 text-sm">
+              Пробел или кнопка «Продолжить», чтобы играть дальше
+            </p>
           </div>
         )}
 
